@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 16
+VisualStudioVersion = 16.0.30907.101
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{6EC3EE1D-3C4E-46DD-8F32-0CC8E7565705}") = "PasteCSharpAsFSharp", "PasteCSharpAsFSharp.fsproj", "{F640A70B-5C01-4404-BD34-4DC3348C9328}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{F640A70B-5C01-4404-BD34-4DC3348C9328}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F640A70B-5C01-4404-BD34-4DC3348C9328}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F640A70B-5C01-4404-BD34-4DC3348C9328}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F640A70B-5C01-4404-BD34-4DC3348C9328}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {454D05A5-84D2-4CCD-A9AA-FB71B01B357D}
+	EndGlobalSection
+EndGlobal
