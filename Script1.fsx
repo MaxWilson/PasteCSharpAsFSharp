@@ -17,8 +17,7 @@ module Parse =
     open Types
     let identifierCharacters = alphanumeric + Set['.']
     let (|EOL|) = function
-        | Str "\n" rest -> rest
-        | rest -> rest
+        | Optional "\n" rest -> rest
     let (|Namespace|_|) = function
         | Keyword "using" (Chars identifierCharacters (namespace', Str ";" (EOL rest))) ->
             Some(namespace', rest)
@@ -32,6 +31,10 @@ module Parse =
     let (|Comment|_|) = function
         | OWS(Str "//" (CharsExcept (Set.ofList ['\r';'\n']) (comment, EOL rest))) -> Some (ProgramFragment.Comment comment, rest)
         | _ -> None
+    let rec (|Function|_|) = pack <| function
+        | Optional "public" (Function f) -> Some f
+        | Optional "static" (Function f) -> Some f
+        |
     let (|ProgramFragment|_|) = function
         | Str "\n" rest -> Some (BlankLine, rest)
         | Namespaces(namespaces, rest) ->
