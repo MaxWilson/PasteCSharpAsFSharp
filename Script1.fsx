@@ -41,10 +41,39 @@ module Parse =
         | Namespace(namespace', rest) ->
             Some([namespace'], rest)
         | _ -> None
+    module Type =
+        let validChars = alphanumeric + Set.ofList ['.';'<';'>']
+        let (|Name|_|) = function
+            | OWS (Chars validChars (name, rest)) -> Some(name, rest)
+            | _ -> None
+    module Expression =
+        let (|Expressions|_|) = function
+            | _ -> None
+    module Statement =
+        let (|Block|_|) = function
+            | _ -> None
+    module Function =
+        let rec (|Modifiers|) = function
+            | Keyword "public" (Modifiers rest) -> rest
+            | Keyword "static" (Modifiers rest) -> rest
+            | Keyword "async" (Modifiers rest) -> rest
+            | rest -> rest
+        let (|Parameter|_|) = function
+            | _ -> None
+        let (|Parameters|_|) = function
+            | _ -> None
+        let (|Declaration|_|) = function
+            | Modifiers(Type.Name(returnType,
+                            Word(functionName,
+                                Parameters(parameters,
+                                    Statement.Block(body, rest))))) ->
+                Some((), rest)
+            | _ -> None
     let (|ProgramFragment|_|) = function
         | Namespaces(namespaces, rest) ->
             Some ([Types.Namespaces namespaces], rest)
         | Comment ProgramFragment.Comment (c, rest) -> Some([c], rest)
+        | Function.Declaration(f, rest) -> Some([], rest)
         | _ -> None
     let rec (|Program|_|) = pack <| function
         | ProgramFragment(fragments, Program(program, rest)) ->
@@ -65,7 +94,7 @@ let render (program: Result<ProgramFragment list, string>) =
     let rec renderComment indentLevel = function
         | (separateLine, Line, comment) ->
             $"""{if separateLine then "\n" + spaces indentLevel else " "}//{comment}"""
-        | (separateLine, Block, comment) ->
+        | (separateLine, CommentKind.Block, comment) ->
             $"""{if separateLine then "\n" + spaces indentLevel else " "}(*{comment}*)"""
         | (separateLine, BlankLine, comment) ->
             $"""{if separateLine then "\n" else ""}"""
