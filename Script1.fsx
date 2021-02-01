@@ -4,10 +4,14 @@ open Packrat
 
 module Types =
     type Param = Param of name: string * type': string * attributes: string list
-    type ProgramFragment =
-        | Namespaces of string list
-        | Comment of string
+    type CommentKind =
+        | Line
+        | Block
         | BlankLine
+    type Comment = bool * CommentKind * string
+    type ProgramFragment =
+        | Namespaces of (string * Comment list) list
+        | Comment of Comment
         | Function of name: string * args: Param list * body: ProgramFragment list
 
 #nowarn "40" // We need recursive data structures to declare a left-recursive packrat grammar,
@@ -16,11 +20,20 @@ module Types =
 module Parse =
     open Types
     let identifierCharacters = alphanumeric + Set['.']
-    let (|EOL|) = function
-        | Optional "\n" rest -> rest
+    let (|InlineWS|) = function
+        | Chars inlineWhitespace (_, rest) -> rest
+        | rest -> rest
+    let (|Comment|_|) ctor = function
+        | InlineWS (Str "//" (CharsExcept (Set.ofList ['\r';'\n']) (comment, rest))) -> Some (ctor (false, Line, comment), rest)
+        | InlineWS (Str "\n" (Str "\n" _ as rest)) -> Some (ctor (true, BlankLine, ""), rest)
+        | WS (Str "//" (CharsExcept (Set.ofList ['\r';'\n']) (comment, rest))) -> Some (ctor (true, Line, comment), rest)
+        | _ -> None
+    let rec (|EOL|) commentCtor = function
+        | Comment commentCtor (comment, EOL commentCtor (eol, rest)) -> [comment]@eol, rest
+        | Optional "\n" rest -> [], rest
     let (|Namespace|_|) = function
-        | Keyword "using" (Chars identifierCharacters (namespace', Str ";" (EOL rest))) ->
-            Some(namespace', rest)
+        | Keyword "using" (Chars identifierCharacters (namespace', Str ";" (EOL id (eols, rest)))) ->
+            Some((namespace',eols), rest)
         | _ -> None
     let rec (|Namespaces|_|) = pack <| function
         | Namespace(namespace', Namespaces(more, rest)) ->
@@ -28,24 +41,16 @@ module Parse =
         | Namespace(namespace', rest) ->
             Some([namespace'], rest)
         | _ -> None
-    let (|Comment|_|) = function
-        | OWS(Str "//" (CharsExcept (Set.ofList ['\r';'\n']) (comment, EOL rest))) -> Some (ProgramFragment.Comment comment, rest)
-        | _ -> None
-    let rec (|Function|_|) = pack <| function
-        | Optional "public" (Function f) -> Some f
-        | Optional "static" (Function f) -> Some f
-        |
     let (|ProgramFragment|_|) = function
-        | Str "\n" rest -> Some (BlankLine, rest)
         | Namespaces(namespaces, rest) ->
-            Some (Types.Namespaces namespaces, rest)
-        | Comment c -> Some c
+            Some ([Types.Namespaces namespaces], rest)
+        | Comment ProgramFragment.Comment (c, rest) -> Some([c], rest)
         | _ -> None
     let rec (|Program|_|) = pack <| function
-        | ProgramFragment(fragment, Program(program, rest)) ->
-            Some (fragment::program, rest)
-        | ProgramFragment(fragment, OWS(rest)) ->
-            Some ([fragment], rest)
+        | ProgramFragment(fragments, Program(program, rest)) ->
+            Some (fragments@program, rest)
+        | ProgramFragment(fragments, OWS(rest)) ->
+            Some (fragments, rest)
         | _ -> None
 
 let parse (input: string) =
@@ -56,20 +61,24 @@ open Types
 let render (program: Result<ProgramFragment list, string>) =
     let spaces indentLevel =
         String.replicate (indentLevel * 4) " "
+    let renderList f input = System.String.Join("", List.map f input)
+    let rec renderComment indentLevel = function
+        | (separateLine, Line, comment) ->
+            $"""{if separateLine then "\n" + spaces indentLevel else " "}//{comment}"""
+        | (separateLine, Block, comment) ->
+            $"""{if separateLine then "\n" + spaces indentLevel else " "}(*{comment}*)"""
+        | (separateLine, BlankLine, comment) ->
+            $"""{if separateLine then "\n" else ""}"""
     let rec recur indentLevel = function
         | [] -> []
         | Namespaces(namespaces)::rest ->
-            (namespaces |> List.map (sprintf "open %s"))
+            (namespaces |> List.map (fun (ns, comments) -> $"\nopen {ns}{renderList (renderComment indentLevel) comments}"))
                 @ (recur indentLevel rest)
-        | Comment(comment)::rest ->
-            $"{spaces indentLevel}//{comment}"::(recur indentLevel rest)
-        | BlankLine::[] -> [] // skip blank line at end
-        | BlankLine::rest ->
-            ""::(recur indentLevel rest)
+        | Comment(comment)::rest -> (renderComment indentLevel comment)::(recur indentLevel rest)
     match program with
     | Error msg -> msg
     | Ok program ->
-        System.String.Join("\n", recur 0 program)
+        System.String.Join("", recur 0 program).Trim()
 
 let convert input = parse input |> render |> printfn "%s"
 
@@ -78,13 +87,16 @@ using System;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using System.Collections.Generic;
-using System.Threading.Tasks;
+using System.Threading.Tasks; // will this show up?
 using System.Text;
 // do we need this?
 using System.IO;
 using Azure.Identity;
 
 // end
+
+
+// really the end
 
 """
 

@@ -141,6 +141,7 @@ let (|Optional|) (str: string) ((ctx, ix): ParseInput) =
 // set up some basic alphabets
 let alpha = Set<_>['A'..'Z'] + Set<_>['a'..'z']
 let numeric = Set<_>['0'..'9']
+let inlineWhitespace = Set[' '; '\t']
 let whitespace = Set<_>[' '; '\t'; '\n'; '\r']
 let alphanumeric = alpha + numeric
 let alphawhitespace = alpha + whitespace
