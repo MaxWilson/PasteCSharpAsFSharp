@@ -3,7 +3,7 @@
 open Packrat
 
 module Types =
-    type Param = Param of name: string * type': string * attributes: string list
+    type Param = Param of name: string * typeName: string * attributes: string list
     type CommentKind =
         | Line
         | Block
@@ -12,7 +12,7 @@ module Types =
     type ProgramFragment =
         | Namespaces of (string * Comment list) list
         | Comment of Comment
-        | Function of name: string * args: Param list * body: ProgramFragment list
+        | Function of returnType: string * name: string * args: Param list * body: ProgramFragment list
 
 #nowarn "40" // We need recursive data structures to declare a left-recursive packrat grammar,
 // but we're not doing anything crazy with recursion like calling recursive functions
@@ -41,6 +41,11 @@ module Parse =
         | Namespace(namespace', rest) ->
             Some([namespace'], rest)
         | _ -> None
+    let rec (|DelimitedList|_|) delimiter (|Inner|_|) = pack <| function
+        | Inner(v, OWS (Str delimiter (DelimitedList delimiter (|Inner|_|)(more, rest)))) ->
+            Some(v::more, rest)
+        | Inner(v, rest) -> Some([v], rest)
+        | _ -> None
     module Type =
         let validChars = alphanumeric + Set.ofList ['.';'<';'>']
         let (|Name|_|) = function
@@ -50,7 +55,11 @@ module Parse =
         let (|Expressions|_|) = function
             | _ -> None
     module Statement =
+        let (|Statements|_|) = function
+            | rest -> Some([], rest)
         let (|Block|_|) = function
+            | OWS (Char('{', OWS(Statements(statements, OWS(Char('}', OWS rest)))))) ->
+                Some([], rest)
             | _ -> None
     module Function =
         let rec (|Modifiers|) = function
@@ -59,21 +68,25 @@ module Parse =
             | Keyword "async" (Modifiers rest) -> rest
             | rest -> rest
         let (|Parameter|_|) = function
+            | OWS(Type.Name(typeName, WS(Word(name, rest)))) ->
+                Some (Param(typeName, name, []), rest)
             | _ -> None
         let (|Parameters|_|) = function
+            | OWS(Char ('(', DelimitedList "," (|Parameter|_|) (parameters, Char(')', rest)))) ->
+                Some(parameters, rest)
             | _ -> None
         let (|Declaration|_|) = function
             | Modifiers(Type.Name(returnType,
                             Word(functionName,
                                 Parameters(parameters,
                                     Statement.Block(body, rest))))) ->
-                Some((), rest)
+                Some(Function(returnType, functionName, parameters, body), rest)
             | _ -> None
     let (|ProgramFragment|_|) = function
         | Namespaces(namespaces, rest) ->
             Some ([Types.Namespaces namespaces], rest)
         | Comment ProgramFragment.Comment (c, rest) -> Some([c], rest)
-        | Function.Declaration(f, rest) -> Some([], rest)
+        | Function.Declaration(f, rest) -> Some([f], rest)
         | _ -> None
     let rec (|Program|_|) = pack <| function
         | ProgramFragment(fragments, Program(program, rest)) ->
@@ -90,7 +103,8 @@ open Types
 let render (program: Result<ProgramFragment list, string>) =
     let spaces indentLevel =
         String.replicate (indentLevel * 4) " "
-    let renderList f input = System.String.Join("", List.map f input)
+    let join separator vals = System.String.Join((separator: string), (vals: string seq))
+    let renderList f input = join "" (List.map f input)
     let rec renderComment indentLevel = function
         | (separateLine, Line, comment) ->
             $"""{if separateLine then "\n" + spaces indentLevel else " "}//{comment}"""
@@ -104,6 +118,9 @@ let render (program: Result<ProgramFragment list, string>) =
             (namespaces |> List.map (fun (ns, comments) -> $"\nopen {ns}{renderList (renderComment indentLevel) comments}"))
                 @ (recur indentLevel rest)
         | Comment(comment)::rest -> (renderComment indentLevel comment)::(recur indentLevel rest)
+        | Function(typeName, functionName, parameters, body)::rest ->
+            let paramsTxt = join "," (parameters |> List.map (fun (Param(typeName, paramName, _)) -> $"({paramName}: {typeName})"))
+            $"""let {functionName}({paramsTxt}) = ()"""::(recur indentLevel rest)
     match program with
     | Error msg -> msg
     | Ok program ->
@@ -111,22 +128,9 @@ let render (program: Result<ProgramFragment list, string>) =
 
 let convert input = parse input |> render |> printfn "%s"
 
-convert """
-using System;
-using Azure.Storage.Blobs;
-using Azure.Storage.Blobs.Models;
-using System.Collections.Generic;
-using System.Threading.Tasks; // will this show up?
-using System.Text;
-// do we need this?
-using System.IO;
-using Azure.Identity;
-
-// end
-
-
-// really the end
-
+convert """static public async Task UploadBlob(string accountName, string containerName, string blobName, string blobContents)
+{
+}
 """
 
 let sample1 = """
