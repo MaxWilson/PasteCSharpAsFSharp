@@ -5,8 +5,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="Parsing.fs" />
-    <Compile Include="Library.fs" />
+    <Compile Include="Packrat.fs" />
+    <Compile Include="PasteCSharpAsFSharp.fs" />
     <None Include="Script1.fsx" />
   </ItemGroup>
 
