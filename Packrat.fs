@@ -138,6 +138,10 @@ let (|LookaheadStr|_|) (str: string) ((ctx, ix): ParseInput) =
 let (|Optional|) (str: string) ((ctx, ix): ParseInput) =
     if ix + str.Length <= ctx.input.Length && System.String.Equals(ctx.input.Substring(ix, str.Length), str, System.StringComparison.InvariantCultureIgnoreCase) then (ctx, ix+str.Length) else (ctx, ix)
 
+let (|OptionalInput|) (|Pattern|_|) = function
+    | Pattern(v, rest) -> (Some v, rest)
+    | rest -> None, rest
+
 // set up some basic alphabets
 let alpha = Set<_>['A'..'Z'] + Set<_>['a'..'z']
 let numeric = Set<_>['0'..'9']
