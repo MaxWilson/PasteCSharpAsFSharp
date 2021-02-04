@@ -26,7 +26,7 @@ module Types =
         | TryCatch of Statement list * Catch list
         | IfThenElse of Expression * Statement * Statement option
         | Block of Statement list
-        | Using of typeName: string option * name: string option * Expression * body:Statement // usingStatement will only be declare or assign in valid C# code so we could make this more specific, but the parser should already take care of it
+        | Using of typeName: string option * name: string option * Expression * body:Statement
         | Throw of expr: Expression
         | Do of expr: Expression
     and Catch = Catch of exnType: string option * exnName: string option * Statement list
