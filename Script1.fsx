@@ -5,7 +5,7 @@ open Wilson.Packrat
 open PasteCSharpAsFSharp
 open Render
 
-let convert input = parse input |> render |> printfn "%s"
+let convert input = parse input |> render |> System.Windows.Forms.Clipboard.SetText
 
 let sample1 = """
 using System;
@@ -49,7 +49,7 @@ static public async Task UploadBlob(string accountName, string containerName, st
     }
 }"""
 
-parse sample1 |> render |> System.Windows.Forms.Clipboard.SetText
+convert sample1
 
 (* OUTPUT:
 open System
@@ -62,7 +62,7 @@ open System.IO
 open Azure.Identity
 
 // Some code omitted for brevity.
-let UploadBlob((accountName: string),(containerName: string),(blobName: string),(blobContents: string)) =
+let UploadBlob((accountName: string),(containerName: string),(blobName: string),(blobContents: string)) = async {
     // Construct the blob container endpoint from the arguments.
     let containerEndpoint: string = System.String.Format("https://{0}.blob.core.windows.net/{1}", accountName, containerName)
 
@@ -71,15 +71,14 @@ let UploadBlob((accountName: string),(containerName: string),(blobName: string),
 
     try
         // Create the container if it does not exist.
-        containerClient.CreateIfNotExistsAsync()
+        do! containerClient.CreateIfNotExistsAsync() |> Async.AwaitTask |> Async.Ignore
 
         // Upload text to a new block blob.
         let byteArray: byte[] = Encoding.ASCII.GetBytes(blobContents)
 
         use stream: MemoryStream = new MemoryStream(byteArray)
-        containerClient.UploadBlobAsync(blobName, stream)
+        do! containerClient.UploadBlobAsync(blobName, stream) |> Async.AwaitTask |> Async.Ignore
     with :? Exception as e ->
         e |> raise
+    }
 *)
-
-

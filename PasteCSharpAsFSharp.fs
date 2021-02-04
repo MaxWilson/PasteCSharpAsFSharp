@@ -18,6 +18,7 @@ module Types =
         | MemberAccess of lhs:Expression * afterDot:Expression
         | MethodCall of func:Expression * arguments: Expression list
         | NewCreate of typeName: string * arguments: Expression list
+        | Await of Expression
     type Statement =
         | Comment of Comment
         | Declare of typeName: string * name: string * Expression
@@ -34,6 +35,7 @@ module Types =
         name: string
         parameters: Param list
         body: Statement list
+        isAsync: bool
         }
     type ProgramFragment =
         | Namespaces of (string * Comment list) list
@@ -121,7 +123,7 @@ module Parse =
             | _ -> None
         let (|VariableName|_|) = (|OWS|) >> (|Chars|_|) identChars
         let rec (|Expression|_|) = pack <| function
-            | WSStr "await" (Expression(expr, rest)) -> Some(expr, rest)
+            | WSStr "await" (Expression(expr, rest)) -> Some(Await expr, rest)
             | WSStr "new" (Type.Name(typeName, WSStr "(" (Arguments (args, WSStr ")" rest)))) ->
                 Some(Expression.NewCreate(typeName, args), rest)
             | Expression(lhs, Char('.', Expression(rhs, rest))) -> Some(Expression.MemberAccess(lhs, rhs), rest)
@@ -184,10 +186,10 @@ module Parse =
             | _ -> None
     module Function =
         let rec (|Modifiers|) = function
+            | Keyword "async" (Modifiers(_, rest)) -> true, rest
             | Keyword "public" (Modifiers rest) -> rest
             | Keyword "static" (Modifiers rest) -> rest
-            | Keyword "async" (Modifiers rest) -> rest
-            | rest -> rest
+            | rest -> false, rest
         let (|Parameter|_|) = function
             | OWS(Type.Name(typeName, WS(Word(name, rest)))) ->
                 Some (Param(typeName, name, []), rest)
@@ -197,11 +199,11 @@ module Parse =
                 Some(parameters, rest)
             | _ -> None
         let (|Declaration|_|) = function
-            | Modifiers(Type.Name(returnType,
+            | Modifiers(isAsync, Type.Name(returnType,
                             Word(functionName,
                                 Parameters(parameters,
                                     Statement.Block'(body, rest))))) ->
-                Some(Function({ returnType = returnType; name = functionName; parameters = parameters; body = body }), rest)
+                Some(Function({ returnType = returnType; name = functionName; parameters = parameters; body = body; isAsync = isAsync }), rest)
             | _ -> None
     let (|ProgramFragment|_|) = function
         | Namespaces(namespaces, rest) ->
@@ -251,15 +253,21 @@ module Render =
         | NewCreate(typeName, arguments) ->
             let args = arguments |> List.map renderExpression |> join ", "
             $"new {typeName}({args})"
-    let rec renderStatements indentLevel = function
+        | Await(expr) ->
+            $"{renderExpression expr} |> Async.AwaitTask"
+    let rec renderStatements isAsync indentLevel input =
+        let recur = renderStatements isAsync
+        match input with
         | [] -> []
         | h::t ->
             match h with
-            | Statement.Comment(comment) -> (renderComment indentLevel comment)::(renderStatements indentLevel t)
+            | Statement.Comment(comment) -> (renderComment indentLevel comment)::(recur indentLevel t)
+            | Declare(typeName, name, (Await _ as exp)) when isAsync ->
+                $"\n{spaces indentLevel}let! {name}: {typeName} = {renderExpression exp}"::(recur indentLevel t)
             | Declare(typeName, name, exp) ->
-                $"\n{spaces indentLevel}let {name}: {typeName} = {renderExpression exp}"::(renderStatements indentLevel t)
+                $"\n{spaces indentLevel}let {name}: {typeName} = {renderExpression exp}"::(recur indentLevel t)
             | Assign(name, exp) ->
-                $"\n{spaces indentLevel}{name} <- {renderExpression exp}"::(renderStatements indentLevel t)
+                $"\n{spaces indentLevel}{name} <- {renderExpression exp}"::(recur indentLevel t)
             | TryCatch(body, catches) ->
                 let renderCatch = function
                     | Catch(exnType, varName, body) ->
@@ -269,18 +277,18 @@ module Render =
                             | Some exnType, None -> $":? {exnType}"
                             | None, Some varName -> varName
                             | Some exnType, Some varName -> $":? {exnType} as {varName}"
-                        ($"\n{spaces indentLevel}with {label} ->"::(renderStatements (indentLevel+1) body))
+                        ($"\n{spaces indentLevel}with {label} ->"::(recur (indentLevel+1) body))
 
-                ($"\n{spaces indentLevel}try"::(renderStatements (indentLevel+1) body))
+                ($"\n{spaces indentLevel}try"::(recur (indentLevel+1) body))
                 @(catches |> List.collect renderCatch)
-                @(renderStatements indentLevel t)
+                @(recur indentLevel t)
             | IfThenElse(condition, thenBody, elseBody) ->
                 $"\n{spaces indentLevel}if {renderExpression condition}"
-                ::(renderStatements (indentLevel+1) [thenBody])
-                @(match elseBody with | None -> [] | Some body -> renderStatements (indentLevel + 1) [body])
-                @(renderStatements indentLevel t)
+                ::(recur (indentLevel+1) [thenBody])
+                @(match elseBody with | None -> [] | Some body -> recur (indentLevel + 1) [body])
+                @(recur indentLevel t)
             | Block statements ->
-                $"\n{spaces indentLevel}"::(renderStatements (indentLevel+1) statements)@(renderStatements indentLevel t)
+                $"\n{spaces indentLevel}"::(recur (indentLevel+1) statements)@(recur indentLevel t)
             | Using(typeName, varName, expression, body) ->
                 let expr =
                     let expr = renderExpression expression
@@ -290,13 +298,15 @@ module Render =
                     | _ -> $"_ = {expr}"
                 let body =
                     match body with
-                    | Block stmts -> renderStatements indentLevel stmts
-                    | stmt -> renderStatements indentLevel [stmt]
-                $"\n{spaces indentLevel}use {expr}"::body@(renderStatements indentLevel t)
+                    | Block stmts -> recur indentLevel stmts
+                    | stmt -> recur indentLevel [stmt]
+                $"\n{spaces indentLevel}use {expr}"::body@(recur indentLevel t)
             | Throw expr ->
-                $"\n{spaces indentLevel}{renderExpression expr} |> raise"::(renderStatements indentLevel t)
+                $"\n{spaces indentLevel}{renderExpression expr} |> raise"::(recur indentLevel t)
+            | Do (Await _ as expr) when isAsync ->
+                $"\n{spaces indentLevel}do! {renderExpression expr} |> Async.Ignore"::(recur indentLevel t)
             | Do expr ->
-                $"\n{spaces indentLevel}{renderExpression expr}"::(renderStatements indentLevel t)
+                $"\n{spaces indentLevel}{renderExpression expr}"::(recur indentLevel t)
     let rec renderFragments indentLevel = function
         | [] -> []
         | Namespaces(namespaces)::rest ->
@@ -305,8 +315,11 @@ module Render =
         | ProgramFragment.Comment(comment)::rest -> (renderComment indentLevel comment)::(renderFragments indentLevel rest)
         | Function(definition)::rest ->
             let paramsTxt = join "," (definition.parameters |> List.map (fun (Param(typeName, paramName, _)) -> $"({paramName}: {typeName})"))
+            let asyncWrapper body =
+                if definition.isAsync then " async {"::body@[$"\n{spaces (indentLevel+1)}}}"]
+                else body
             [$"""{spaces indentLevel}let {definition.name}({paramsTxt}) ="""]@
-                (renderStatements (indentLevel+1) definition.body)@(renderFragments indentLevel rest)
+                asyncWrapper((renderStatements definition.isAsync (indentLevel+1) definition.body))@(renderFragments indentLevel rest)
     let render (program: Result<ProgramFragment list, string>) =
         match program with
         | Error msg -> msg
