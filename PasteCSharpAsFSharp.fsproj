@@ -8,8 +8,7 @@
     <Compile Include="Packrat.fs" />
     <Compile Include="PasteCSharpAsFSharp.fs" />
     <None Include="Script1.fsx" />
+    <None Include="Output.fsx" />
   </ItemGroup>
-
-  <ItemGroup />
 
 </Project>

@@ -10,13 +10,13 @@ module Types =
         | BlankLine
     type Comment = bool * CommentKind * string
     type Literal =
-        | Number of int64
+        | Number of string
         | String of string
     type Expression =
         | Literal of Literal
         | VariableDeref of string
         | MemberAccess of lhs:Expression * afterDot:Expression
-        | MethodCall of method:Expression * arguments: Expression list
+        | MethodCall of func:Expression * arguments: Expression list
         | NewCreate of typeName: string * arguments: Expression list
     type Statement =
         | Comment of Comment
@@ -25,7 +25,7 @@ module Types =
         | TryCatch of Statement list * Catch list
         | IfThenElse of Expression * Statement * Statement option
         | Block of Statement list
-        | Using of usingStatement: Statement * body:Statement // usingStatement will only be declare or assign in valid C# code so we could make this more specific, but the parser should already take care of it
+        | Using of typeName: string option * name: string option * Expression * body:Statement // usingStatement will only be declare or assign in valid C# code so we could make this more specific, but the parser should already take care of it
         | Throw of expr: Expression
         | Do of expr: Expression
     and Catch = Catch of exnType: string option * exnName: string option * Statement list
@@ -115,8 +115,8 @@ module Parse =
             | WSStr "\"" (Escaped (str, WSStr "\"" rest)) -> Some(str, rest)
             | _ -> None
         let (|Literal|_|) = function
-            | OWS(Str "-" (Chars numeric (number, rest))) -> Some(Number -(System.Int64.Parse(number)), rest)
-            | OWS(Chars numeric (number, rest)) -> Some(Number (System.Int64.Parse(number)), rest)
+            | OWS(Str "-" (Chars numeric (number, rest))) -> Some(Number ("-" + number), rest)
+            | OWS(Chars numeric (number, rest)) -> Some(Number number, rest)
             | EscapedString (v, rest) -> Some(String v, rest)
             | _ -> None
         let (|VariableName|_|) = (|OWS|) >> (|Chars|_|) identChars
@@ -139,11 +139,15 @@ module Parse =
         let (|LValue|_|) = function
             | Identifier(id, rest) -> Some (id, rest)
             | _ -> None
-        let (|Assign|_|) = function
+        // perhaps we should refactor this so that Statement just parses Assign separately
+        // for Statement.Assign vs. Statement.Using. This pattern feels very complex and non-obvious.
+        let usingDeclare (typeName, varName, expr) body = Using(Some typeName, Some varName, expr, body)
+        let usingAssign (varName, expr) body = Using(None, Some varName, expr, body)
+        let (|Assign|_|) declare assign = function
             | Type.Name(typeName, LValue(varName, OWS(Str "=" (Expression.Expression(expr, rest))))) ->
-                Some(Statement.Declare(typeName, varName, expr), rest)
+                Some(declare (typeName, varName, expr), rest)
             | LValue(varName, Str "=" (Expression.Expression(expr, rest))) ->
-                Some(Statement.Assign(varName, expr), rest)
+                Some(assign (varName, expr), rest)
             | _ -> None
         let rec (|Statement|_|) = function
             | Comment id (comment, rest) -> Some(Statement.Comment comment, rest)
@@ -159,12 +163,12 @@ module Parse =
                                                 rest)))))))))
                 ->
                     Some(Statement.TryCatch(b, [Catch(Some exnType, identifier, catchBlock)]), rest)
-            | Assign(statement, WSStr ";" rest) ->
+            | Assign Statement.Declare Statement.Assign (statement, WSStr ";" rest) ->
                 Some(statement, rest)
             | Expression.Expression(expr, WSStr ";" rest) -> Some(Statement.Do expr, rest)
             | WSStr "throw" (Expression.Expression(expr, WSStr ";" rest)) -> Some(Statement.Throw expr, rest)
-            | WSStr "using" (WSStr "(" (Assign(usingStmt, WSStr ")" (StatementOrBlock(body, rest))))) ->
-                Some(Statement.Using(usingStmt, body), rest)
+            | WSStr "using" (WSStr "(" (Assign usingDeclare usingAssign (usingThunk, WSStr ")" (StatementOrBlock(body, rest))))) ->
+                Some(usingThunk body, rest)
             | rest -> None
         and (|Statements|_|) = pack <| function
             | Statement(s, Statements(more, rest)) -> Some(s::more, rest)
@@ -216,8 +220,8 @@ let parse (input: string) =
     match ParseArgs.Init (input.TrimStart()) with
     | Parse.Program(p, End) -> Ok p
     | _ -> Error "I can't understand that C# snippet, please make sure it is valid."
-open Types
-let render (program: Result<ProgramFragment list, string>) =
+module Render =
+    open Types
     let spaces indentLevel =
         String.replicate (indentLevel * 4) " "
     let join separator vals = System.String.Join((separator: string), (vals: string seq))
@@ -229,16 +233,82 @@ let render (program: Result<ProgramFragment list, string>) =
             $"""{if separateLine then "\n" + spaces indentLevel else " "}(*{comment}*)"""
         | (separateLine, BlankLine, comment) ->
             $"""{if separateLine then "\n" else ""}"""
-    let rec recur indentLevel = function
+    let rec renderExpression = function
+        | Expression.Literal(String v) -> sprintf "%A" v
+        | Expression.Literal(Number v) -> v
+        | VariableDeref v ->
+            // do a small amount of special casing here to account for C# builtin aliases that
+            // don't exist in F#
+            match v with
+            | "string" -> "System.String"
+            | "int" -> "System.Int32"
+            | _ -> v
+        | MemberAccess(lhs, afterDot) ->
+            $"{renderExpression lhs}.{renderExpression afterDot}"
+        | MethodCall(func, arguments) ->
+            let args = arguments |> List.map renderExpression |> join ", "
+            $"{renderExpression func}({args})"
+        | NewCreate(typeName, arguments) ->
+            let args = arguments |> List.map renderExpression |> join ", "
+            $"new {typeName}({args})"
+    let rec renderStatements indentLevel = function
+        | [] -> []
+        | h::t ->
+            match h with
+            | Statement.Comment(comment) -> (renderComment indentLevel comment)::(renderStatements indentLevel t)
+            | Declare(typeName, name, exp) ->
+                $"\n{spaces indentLevel}let {name}: {typeName} = {renderExpression exp}"::(renderStatements indentLevel t)
+            | Assign(name, exp) ->
+                $"\n{spaces indentLevel}{name} <- {renderExpression exp}"::(renderStatements indentLevel t)
+            | TryCatch(body, catches) ->
+                let renderCatch = function
+                    | Catch(exnType, varName, body) ->
+                        let label =
+                            match exnType, varName with
+                            | None, None -> "_"
+                            | Some exnType, None -> $":? {exnType}"
+                            | None, Some varName -> varName
+                            | Some exnType, Some varName -> $":? {exnType} as {varName}"
+                        ($"\n{spaces indentLevel}with {label} ->"::(renderStatements (indentLevel+1) body))
+
+                ($"\n{spaces indentLevel}try"::(renderStatements (indentLevel+1) body))
+                @(catches |> List.collect renderCatch)
+                @(renderStatements indentLevel t)
+            | IfThenElse(condition, thenBody, elseBody) ->
+                $"\n{spaces indentLevel}if {renderExpression condition}"
+                ::(renderStatements (indentLevel+1) [thenBody])
+                @(match elseBody with | None -> [] | Some body -> renderStatements (indentLevel + 1) [body])
+                @(renderStatements indentLevel t)
+            | Block statements ->
+                $"\n{spaces indentLevel}"::(renderStatements (indentLevel+1) statements)@(renderStatements indentLevel t)
+            | Using(typeName, varName, expression, body) ->
+                let expr =
+                    let expr = renderExpression expression
+                    match typeName, varName with
+                    | None, Some varName -> $"{varName} = {expr}"
+                    | Some typeName, Some varName -> $"{varName}: {typeName} = {expr}"
+                    | _ -> $"_ = {expr}"
+                let body =
+                    match body with
+                    | Block stmts -> renderStatements indentLevel stmts
+                    | stmt -> renderStatements indentLevel [stmt]
+                $"\n{spaces indentLevel}use {expr}"::body@(renderStatements indentLevel t)
+            | Throw expr ->
+                $"\n{spaces indentLevel}{renderExpression expr} |> raise"::(renderStatements indentLevel t)
+            | Do expr ->
+                $"\n{spaces indentLevel}{renderExpression expr}"::(renderStatements indentLevel t)
+    let rec renderFragments indentLevel = function
         | [] -> []
         | Namespaces(namespaces)::rest ->
             (namespaces |> List.map (fun (ns, comments) -> $"\nopen {ns}{renderList (renderComment indentLevel) comments}"))
-                @ (recur indentLevel rest)
-        | Comment(comment)::rest -> (renderComment indentLevel comment)::(recur indentLevel rest)
+                @ (renderFragments indentLevel rest)
+        | ProgramFragment.Comment(comment)::rest -> (renderComment indentLevel comment)::(renderFragments indentLevel rest)
         | Function(definition)::rest ->
             let paramsTxt = join "," (definition.parameters |> List.map (fun (Param(typeName, paramName, _)) -> $"({paramName}: {typeName})"))
-            $"""let {definition.name}({paramsTxt}) = ()"""::(recur indentLevel rest)
-    match program with
-    | Error msg -> msg
-    | Ok program ->
-        System.String.Join("", recur 0 program).Trim()
+            [$"""{spaces indentLevel}let {definition.name}({paramsTxt}) ="""]@
+                (renderStatements (indentLevel+1) definition.body)@(renderFragments indentLevel rest)
+    let render (program: Result<ProgramFragment list, string>) =
+        match program with
+        | Error msg -> msg
+        | Ok program ->
+            System.String.Join("", renderFragments 0 program).Trim()
