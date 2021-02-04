@@ -9,10 +9,36 @@ module Types =
         | Block
         | BlankLine
     type Comment = bool * CommentKind * string
+    type Literal =
+        | Number of int64
+        | String of string
+    type Expression =
+        | Literal of Literal
+        | VariableDeref of string
+        | MemberAccess of lhs:Expression * afterDot:Expression
+        | MethodCall of method:Expression * arguments: Expression list
+        | NewCreate of typeName: string * arguments: Expression list
+    type Statement =
+        | Comment of Comment
+        | Declare of typeName: string * name: string * Expression
+        | Assign of name: string * Expression
+        | TryCatch of Statement list * Catch list
+        | IfThenElse of Expression * Statement * Statement option
+        | Block of Statement list
+        | Using of usingStatement: Statement * body:Statement // usingStatement will only be declare or assign in valid C# code so we could make this more specific, but the parser should already take care of it
+        | Throw of expr: Expression
+        | Do of expr: Expression
+    and Catch = Catch of exnType: string option * exnName: string option * Statement list
+    type FunctionDefinition = {
+        returnType: string
+        name: string
+        parameters: Param list
+        body: Statement list
+        }
     type ProgramFragment =
         | Namespaces of (string * Comment list) list
         | Comment of Comment
-        | Function of returnType: string * name: string * args: Param list * body: ProgramFragment list
+        | Function of FunctionDefinition
 
 #nowarn "40" // We need recursive data structures to declare a left-recursive packrat grammar,
 // but we're not doing anything crazy with recursion like calling recursive functions
@@ -89,23 +115,24 @@ module Parse =
             | WSStr "\"" (Escaped (str, WSStr "\"" rest)) -> Some(str, rest)
             | _ -> None
         let (|Literal|_|) = function
-            | OWS(Chars numeric (number, rest)) -> Some((), rest)
-            | EscapedString (v, rest) -> Some((), rest)
+            | OWS(Str "-" (Chars numeric (number, rest))) -> Some(Number -(System.Int64.Parse(number)), rest)
+            | OWS(Chars numeric (number, rest)) -> Some(Number (System.Int64.Parse(number)), rest)
+            | EscapedString (v, rest) -> Some(String v, rest)
             | _ -> None
         let (|VariableName|_|) = (|OWS|) >> (|Chars|_|) identChars
         let rec (|Expression|_|) = pack <| function
             | WSStr "await" (Expression(expr, rest)) -> Some(expr, rest)
             | WSStr "new" (Type.Name(typeName, WSStr "(" (Arguments (args, WSStr ")" rest)))) ->
-                Some((), rest)
-            | Expression(lhs, Char('.', Expression(rhs, rest))) -> Some((), rest)
-            | Expression(lhs, WSStr "(" (Arguments (args, WSStr ")" rest))) -> Some((), rest)
-            | Literal(l, rest) -> Some((), rest)
-            | VariableName(v, rest) -> Some((), rest)
+                Some(Expression.NewCreate(typeName, args), rest)
+            | Expression(lhs, Char('.', Expression(rhs, rest))) -> Some(Expression.MemberAccess(lhs, rhs), rest)
+            | Expression(lhs, WSStr "(" (Arguments (args, WSStr ")" rest))) -> Some(Expression.MethodCall(lhs, args), rest)
+            | Literal(l, rest) -> Some(Literal l, rest)
+            | VariableName(v, rest) -> Some(Expression.VariableDeref v, rest)
             | _ -> None
         and (|Arguments|_|) = function
-            | Expression(expr, WSStr "," (Arguments (more, rest))) -> Some((), rest)
-            | Expression (expr, rest) -> Some(expr, rest)
-            | rest -> Some((), rest)
+            | Expression(expr, WSStr "," (Arguments (more, rest))) -> Some(expr::more, rest)
+            | Expression (expr, rest) -> Some([expr], rest)
+            | rest -> Some([], rest)
         let (|Expressions|_|) = function
             | _ -> None
     module Statement =
@@ -114,43 +141,42 @@ module Parse =
             | _ -> None
         let (|Assign|_|) = function
             | Type.Name(typeName, LValue(varName, OWS(Str "=" (Expression.Expression(expr, rest))))) ->
-                Some((), rest)
+                Some(Statement.Declare(typeName, varName, expr), rest)
             | LValue(varName, Str "=" (Expression.Expression(expr, rest))) ->
-                Some((), rest)
+                Some(Statement.Assign(varName, expr), rest)
             | _ -> None
-
         let rec (|Statement|_|) = function
-            | Comment id (comment, rest) -> Some((), rest)
+            | Comment id (comment, rest) -> Some(Statement.Comment comment, rest)
             | WSStr "try"
-                (Block(b,
+                (Block'(b,
                     WSStr "catch" (
                         WSStr "(" (
                             Type.Name(exnType,
                                 (OptionalInput (|Identifier|_|)
                                     (identifier,
                                         WSStr ")"
-                                            (Block(catchBlock,
+                                            (Block'(catchBlock,
                                                 rest)))))))))
                 ->
-                    Some((), rest)
+                    Some(Statement.TryCatch(b, [Catch(Some exnType, identifier, catchBlock)]), rest)
             | Assign(statement, WSStr ";" rest) ->
-                Some((), rest)
-            | Expression.Expression(expr, WSStr ";" rest) -> Some((), rest)
-            | WSStr "throw" (Expression.Expression(expr, WSStr ";" rest)) -> Some((), rest)
-            | WSStr "using" (WSStr "(" (Assign(expr, WSStr ")" (StatementOrBlock(body, rest))))) ->
-                Some((), rest)
+                Some(statement, rest)
+            | Expression.Expression(expr, WSStr ";" rest) -> Some(Statement.Do expr, rest)
+            | WSStr "throw" (Expression.Expression(expr, WSStr ";" rest)) -> Some(Statement.Throw expr, rest)
+            | WSStr "using" (WSStr "(" (Assign(usingStmt, WSStr ")" (StatementOrBlock(body, rest))))) ->
+                Some(Statement.Using(usingStmt, body), rest)
             | rest -> None
         and (|Statements|_|) = pack <| function
             | Statement(s, Statements(more, rest)) -> Some(s::more, rest)
             | rest -> Some([], rest)
             | _ -> None
-        and (|Block|_|) = function
+        and (|Block'|_|) = function
             | WSStr "{" (Statements(statements, WSStr "}" rest)) ->
-                Some([], rest)
+                Some(statements, rest)
             | _ -> None
         and (|StatementOrBlock|_|) = function
-            | Block(stmts, rest) -> Some(stmts, rest)
-            | Statement(stmt, rest) -> Some([stmt], rest)
+            | Block'(stmts, rest) -> Some(Types.Statement.Block stmts, rest)
+            | Statement(stmt, rest) -> Some(stmt, rest)
             | _ -> None
     module Function =
         let rec (|Modifiers|) = function
@@ -170,8 +196,8 @@ module Parse =
             | Modifiers(Type.Name(returnType,
                             Word(functionName,
                                 Parameters(parameters,
-                                    Statement.Block(body, rest))))) ->
-                Some(Function(returnType, functionName, parameters, body), rest)
+                                    Statement.Block'(body, rest))))) ->
+                Some(Function({ returnType = returnType; name = functionName; parameters = parameters; body = body }), rest)
             | _ -> None
     let (|ProgramFragment|_|) = function
         | Namespaces(namespaces, rest) ->
@@ -209,9 +235,9 @@ let render (program: Result<ProgramFragment list, string>) =
             (namespaces |> List.map (fun (ns, comments) -> $"\nopen {ns}{renderList (renderComment indentLevel) comments}"))
                 @ (recur indentLevel rest)
         | Comment(comment)::rest -> (renderComment indentLevel comment)::(recur indentLevel rest)
-        | Function(typeName, functionName, parameters, body)::rest ->
-            let paramsTxt = join "," (parameters |> List.map (fun (Param(typeName, paramName, _)) -> $"({paramName}: {typeName})"))
-            $"""let {functionName}({paramsTxt}) = ()"""::(recur indentLevel rest)
+        | Function(definition)::rest ->
+            let paramsTxt = join "," (definition.parameters |> List.map (fun (Param(typeName, paramName, _)) -> $"({paramName}: {typeName})"))
+            $"""let {definition.name}({paramsTxt}) = ()"""::(recur indentLevel rest)
     match program with
     | Error msg -> msg
     | Ok program ->
